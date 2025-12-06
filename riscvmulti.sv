@@ -10,12 +10,15 @@ module riscvmulti (
 
     logic [31:0] instr, PC = 0;
 
-    wire writeBackEn = // Quando se escreve no banco de registradores?
-    wire [31:0] writeBackData = // O que se escreve no banco de registradores?
-    wire [31:0] LoadStoreAddress = // Como se calcula o endereço de memória para loads e stores?
-    assign Address = // Qual o endereço de memória a ser acessado? Alternar entre .text e .data dependendo do estado
-    assign MemWrite = // Em que estado se escreve na memória?
-    assign WriteData = // O que se escreve na memória?
+    // The state machine
+    localparam FETCH_INSTR = 0;
+    localparam WAIT_INSTR  = 1;
+    localparam FETCH_REGS  = 2;
+    localparam EXECUTE     = 3;
+    localparam LOAD        = 4;
+    localparam WAIT_DATA   = 5;
+    localparam STORE       = 6;
+    reg [2:0] state = FETCH_INSTR;
 
     // The 10 RISC-V instructions
     wire isALUreg  =  (instr[6:0] == 7'b0110011); // rd <- rs1 OP rs2   
@@ -66,8 +69,46 @@ module riscvmulti (
     wire        LTU = aluMinus[32];
     wire        EQ  = (aluMinus[31:0] == 0);
 
-    // Flip a 32 bit word. Used by the shifter (a single shifter for
-    // left and right shifts, saves silicium !)
+    // --- LÓGICA DE CONTROLE E MEMÓRIA AJUSTADA ---
+
+    wire writeBackEn = (state == EXECUTE && (isALUreg || isALUimm || isJAL || isJALR || isLUI || isAUIPC)) ||
+                       (state == WAIT_DATA && isLoad);
+    
+    // Cálculo do endereço efetivo (sem alinhar ainda)
+    wire [31:0] LoadStoreAddress = rs1 + (isStore ? Simm : Iimm);
+    wire [1:0] addrOffset = LoadStoreAddress[1:0];
+
+    // Leitura dos dados deslocados
+    wire [7:0] byteLoaded = ReadData >> (addrOffset * 8);
+    wire [15:0] halfLoaded = ReadData >> (addrOffset * 8);
+
+    // Seleção e extensão de sinal (CORRIGIDO LBU)
+    wire [31:0] memDataSext = (funct3 == 3'b000) ? {{24{byteLoaded[7]}}, byteLoaded} : // lb
+                              (funct3 == 3'b001) ? {{16{halfLoaded[15]}}, halfLoaded} : // lh
+                              (funct3 == 3'b100) ? {24'b0, byteLoaded} :               // lbu (Corrigido de halfLoaded para byteLoaded)
+                              (funct3 == 3'b101) ? {16'b0, halfLoaded} :               // lhu
+                              ReadData;                                                // lw
+
+    wire [31:0] writeBackData = (isJAL || isJALR) ? PCplus4 :
+                                (isLoad)          ? memDataSext : ALUResult;
+
+    // CORREÇÃO CRÍTICA: O endereço enviado para a memória deve ser alinhado à palavra (bits 1:0 = 00)
+    // A lógica de WriteMask e Shift cuida do byte específico.
+    assign Address = (state == FETCH_INSTR || state == WAIT_INSTR) ? PC : {LoadStoreAddress[31:2], 2'b00};
+    
+    assign MemWrite = (state == STORE);
+    
+    // Dado a ser escrito deslocado para a posição correta
+    assign WriteData = rs2 << (addrOffset * 8);
+
+    assign WriteMask = (state != STORE) ? 4'b0 :
+                       (funct3 == 3'b000) ? (4'b0001 << addrOffset) : // sb
+                       (funct3 == 3'b001) ? (4'b0011 << addrOffset) : // sh
+                       4'b1111;                                       // sw
+
+    // -----------------------------------------------------
+
+    // Flip a 32 bit word.
     function [31:0] flip32;
         input [31:0] x;
         flip32 = {x[ 0], x[ 1], x[ 2], x[ 3], x[ 4], x[ 5], x[ 6], x[ 7], 
@@ -124,23 +165,12 @@ module riscvmulti (
                                                       isJALR ? {aluPlus[31:1],1'b0} :
                                                                PCplus4;
 
-
-    // The state machine
-    localparam FETCH_INSTR = 0;
-    localparam WAIT_INSTR  = 1;
-    localparam FETCH_REGS  = 2;
-    localparam EXECUTE     = 3;
-    localparam LOAD        = 4;
-    localparam WAIT_DATA   = 5;
-    localparam STORE       = 6;
-    reg [2:0] state = FETCH_INSTR;
-
     always @(posedge clk)
         if (reset) begin
             PC    <= 0;
             state <= FETCH_INSTR;
         end else begin
-            if (writeBackEn) begin
+            if (writeBackEn && rdId_A3 != 0) begin // Adicionei proteção x0 por segurança
                 RegisterBank[rdId_A3] <= writeBackData;
                 //$display("r%0d <= %b (%d) (%d)",rdId_A3,writeBackData,writeBackData,$signed(writeBackData));
             end
