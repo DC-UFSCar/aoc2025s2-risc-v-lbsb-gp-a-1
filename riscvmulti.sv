@@ -138,7 +138,7 @@ module riscvmulti (
             3'b100: ALUResult = (SrcA ^ SrcB);
             3'b101: ALUResult = shifter;
             3'b110: ALUResult = (SrcA | SrcB);
-            3'b111: ALUResult = (SrcA & SrcB);	
+            3'b111: ALUResult = (SrcA & SrcB);  
         endcase
     end
 
@@ -162,8 +162,8 @@ module riscvmulti (
     wire [31:0] PCplus4  = PC + 4;
     wire [31:0] PCTarget = PC + (isJAL ? Jimm : isAUIPC ? Uimm : Bimm);
     wire [31:0] PCNext = ((isBranch && takeBranch) || isJAL) ? PCTarget :
-                                                      isJALR ? {aluPlus[31:1],1'b0} :
-                                                               PCplus4;
+                                              isJALR ? {aluPlus[31:1],1'b0} :
+                                                       PCplus4;
 
     always @(posedge clk)
         if (reset) begin
@@ -197,7 +197,7 @@ module riscvmulti (
                         end
                     state <= isLoad  ? LOAD  : 
                              isStore ? STORE : 
-                                       FETCH_INSTR;
+                                     FETCH_INSTR;
                 end
                 LOAD: begin
                     state <= WAIT_DATA;
